@@ -1,12 +1,12 @@
 /*
- * thread_proxy.c - A Simple Sequential Web proxy
+ * thread_proxy.c - Concurrent Web Proxy (Threaded)
  *
  * Course Name: 14:332:456-Network Centric Programming
- * Assignment 2
+ * Assignment 3
  * Student Name: Neil M. Patel
  * 
 
-This program implements a simple iterative web proxy. Its functionality is as follows:
+This program implements a simple iterative web proxy using threading. Its functionality is as follows:
 
 1. On program execution, the proxy creates a socket (using socket()), binds that socket to a port specified by
 the user as a command-line argument (using bind()), sets up the socket to listen for requests (using 
@@ -28,8 +28,16 @@ created to communicate with the client for viewing in the browser.
 5. After processing this request, the client file descriptor used to communicate with the proxy is closed, and
 the proxy calls accept() again to wait for the next client.
 
-Note: Stage 3 of the assignment is implemented in the separate client.c file, which is passed a URI and prints the
-HTML response from the corresponding server.
+Note: Threads are used in this implementation so that each client request is handled by its own thread. The changes
+to the Assignment 2 codebase are as follows:
+
+1. When the logfile entry is written to the log file, a mutex is used to ensure that no 2 threads can access the file
+at the same time.
+
+2. Since the Open_clientfd() function implemented in csapp.c calls gethostbyname(), a thread-unsafe function,
+a mutex is used to ensure synchronization.
+
+3. strtok(), another thread-unsafe function, is replaced with its thread-safe counterpart, strsep(). 
 
  */ 
 
@@ -130,6 +138,10 @@ void* process_request(void* param) {
         bzero(entry_buf, sizeof(entry_buf));
         format_log_entry(entry_buf, &cliaddr, request_uri, 0);
 
+        /*
+        Threading synchronization- Uses a mutex to ensure that only one thread accesses/modifies the file at one time 
+        */
+
         //Get lock on log file
         pthread_mutex_lock(&logfile_mutex);
         
@@ -139,10 +151,11 @@ void* process_request(void* param) {
         }
 
         //Write buffer contents to file ptr
-        entry_buf[strlen(entry_buf)] = '\n';
+        entry_buf[strlen(entry_buf)] = '\n';    //Ensure each entry is on a single line  
         int num_entry_bytes_rem = strlen(entry_buf) + 1;
         int write_ret = 0;
         int num_wr = 0;
+        //Continuously call fwrite() while the entry has still not fully been written to the logfile
         while(num_entry_bytes_rem > 0) {
             write_ret = fwrite(entry_buf, 1, strlen(entry_buf) + 1 - num_wr, logfile_ptr);
             num_entry_bytes_rem -= write_ret;
@@ -150,7 +163,8 @@ void* process_request(void* param) {
         }
 
         fclose(logfile_ptr);
-        
+
+        //Release lock on log file
         pthread_mutex_unlock(&logfile_mutex);
 
 

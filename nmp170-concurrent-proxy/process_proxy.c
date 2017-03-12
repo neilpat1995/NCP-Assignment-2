@@ -1,12 +1,12 @@
 /*
- * process_proxy.c - A Simple Sequential Web proxy
+ * process_proxy.c - Concurrent Web Proxy (Processes)
  *
  * Course Name: 14:332:456-Network Centric Programming
- * Assignment 2
+ * Assignment 3
  * Student Name: Neil M. Patel
  * 
 
-This program implements a simple iterative web proxy. Its functionality is as follows:
+This program implements a simple iterative web proxy using processes. Its functionality is as follows:
 
 1. On program execution, the proxy creates a socket (using socket()), binds that socket to a port specified by
 the user as a command-line argument (using bind()), sets up the socket to listen for requests (using 
@@ -28,8 +28,8 @@ created to communicate with the client for viewing in the browser.
 5. After processing this request, the client file descriptor used to communicate with the proxy is closed, and
 the proxy calls accept() again to wait for the next client.
 
-Note: Stage 3 of the assignment is implemented in the separate client.c file, which is passed a URI and prints the
-HTML response from the corresponding server.
+Note: Each client connection is handled using a process. The change to the Assignment 2 codebase are as follows:
+When writing to the log file, a file lock is used to ensure that no other process accesses the file at the same time.
 
  */ 
 
@@ -106,7 +106,9 @@ void process_request(int cfd, char* proxy_port, struct sockaddr_in cliaddr) {
         bzero(entry_buf, sizeof(entry_buf));
         format_log_entry(entry_buf, &cliaddr, request_uri, 0);
 
-        printf("Now creating flock\n");
+        /*
+        Process synchronization implementation
+        */
 
         //Create flock struct and file descriptor for locking log file
         struct flock log_file_lock;
@@ -140,6 +142,7 @@ void process_request(int cfd, char* proxy_port, struct sockaddr_in cliaddr) {
             err_exit();
         }
 
+        //Write log entry to the file. 
         ssize_t log_bytes_wr = write(log_file_fd, entry_buf, strlen(entry_buf) + 1);
 
         if (log_bytes_wr <= 0) {
@@ -151,6 +154,7 @@ void process_request(int cfd, char* proxy_port, struct sockaddr_in cliaddr) {
             }
         }
 
+        //Write newline so that each entry is on its own line.
         ssize_t new_line_wr = write(log_file_fd, "\n", 1);
 
         if (new_line_wr <= 0) {

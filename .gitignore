@@ -35,4 +35,5 @@
 # Custom files
 *.log
 *.tar
+*.tar.gz
 proxy
