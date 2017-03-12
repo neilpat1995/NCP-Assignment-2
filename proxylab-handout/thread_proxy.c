@@ -1,5 +1,5 @@
 /*
- * process_proxy.c - A Simple Sequential Web proxy
+ * thread_proxy.c - A Simple Sequential Web proxy
  *
  * Course Name: 14:332:456-Network Centric Programming
  * Assignment 2
@@ -35,19 +35,30 @@ HTML response from the corresponding server.
 
 #include "csapp.h"
 
-#define PROGRAM_NAME "process_proxy"
+#define PROGRAM_NAME "thread_proxy"
 #define LOGFILE_NAME "proxy.log"
+
+//Container for data needed to service each client request.
+typedef struct {
+    int file_desc;
+    char* port;
+    struct sockaddr_in client_addr;
+} ClientInfo;
 
 /*
  * Function prototypes
  */
 void format_log_entry(char *logstring, struct sockaddr_in *sockaddr, char *uri, int size);
 
-
 void err_exit() {
     perror(PROGRAM_NAME);
     exit(2);
 }
+
+/*
+ * Global variables
+ */
+pthread_mutex_t logfile_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /*
 
@@ -59,8 +70,12 @@ Processes a request once a client connection is made. This function does the fol
 -Reads the server response and writes it back to the client connection descriptor. 
 
 */
-void process_request(int cfd, char* proxy_port, struct sockaddr_in cliaddr) {  
-    
+void* process_request(void* param) {    
+    ClientInfo* param_struct = (ClientInfo*) param;
+    int cfd = param_struct->file_desc;
+    char* proxy_port = param_struct->port;
+    struct sockaddr_in cliaddr = param_struct->client_addr;
+
     //Read the client's request.
     char reqbuf[10000];
     bzero(reqbuf, sizeof(reqbuf));
@@ -106,70 +121,28 @@ void process_request(int cfd, char* proxy_port, struct sockaddr_in cliaddr) {
         bzero(entry_buf, sizeof(entry_buf));
         format_log_entry(entry_buf, &cliaddr, request_uri, 0);
 
-        printf("Now creating flock\n");
-
-        //Create flock struct and file descriptor for locking log file
-        struct flock log_file_lock;
-        int log_file_fd;
-
-        log_file_lock.l_type = F_WRLCK; //write (exclusive) lock
-        log_file_lock.l_whence = SEEK_SET;  //lock the entire file
-        log_file_lock.l_start = 0;
-        log_file_lock.l_len = 0;
-        log_file_lock.l_pid = getpid(); //set to the current process' pid
-
-        //First create file if it doesn't exist by opening a temp file descriptor
-        int temp_log_file_fd = 0;
-
-        if ((temp_log_file_fd = open(LOGFILE_NAME, O_WRONLY | O_CREAT)) == -1) {
+        //Get lock on log file
+        pthread_mutex_lock(&logfile_mutex);
+        
+        FILE* logfile_ptr = fopen(LOGFILE_NAME, "a");   //opens file for appending, with pointer pointing to end of file
+        if (logfile_ptr == NULL) {
             err_exit();
         }
 
-        close(temp_log_file_fd);
-
-        //Now create file desc. for use in fcntl()
-        if ((log_file_fd = open(LOGFILE_NAME, O_WRONLY)) == -1) {
-            err_exit();
+        //Write buffer contents to file ptr
+        int num_entry_bytes_rem = strlen(entry_buf) + 1;
+        int write_ret = 0;
+        int num_wr = 0;
+        while(num_entry_bytes_rem > 0) {
+            write_ret = fwrite(entry_buf, 1, strlen(entry_buf) + 1 - num_wr, logfile_ptr);
+            num_entry_bytes_rem -= write_ret;
+            num_wr += write_ret;
         }
 
-        //Acquire the file lock
-        fcntl(log_file_fd, F_SETLKW, &log_file_lock);
+        pthread_mutex_unlock(&logfile_mutex);
 
-        //First reposition file offset to end of file.
-        if (lseek(log_file_fd, 0, SEEK_END) == -1) {
-            err_exit();
-        }
+        fclose(logfile_ptr);
 
-        ssize_t log_bytes_wr = write(log_file_fd, entry_buf, strlen(entry_buf) + 1);
-
-        if (log_bytes_wr <= 0) {
-            if (log_bytes_wr == 0) {
-                printf("write() call wrote 0 bytes to logfile!");
-            }
-            else {
-                err_exit();
-            }
-        }
-
-        ssize_t new_line_wr = write(log_file_fd, "\n", 1);
-
-        if (new_line_wr <= 0) {
-            if (new_line_wr == 0) {
-                printf("write() call to add new line char wrote 0 bytes to logfile!");
-            }
-            else {
-                err_exit();
-            }
-        }
-
-        //Unlock the log file
-        log_file_lock.l_type = F_UNLCK;
-
-        if (fcntl(log_file_fd, F_SETLK, &log_file_lock) == -1) {
-            err_exit();
-        }
-
-        close(log_file_fd);
 
         //Parse URL to get the domain, port (if included), and requested page.
         char* url = request_uri;
@@ -304,7 +277,13 @@ void process_request(int cfd, char* proxy_port, struct sockaddr_in cliaddr) {
                 err_exit();
             }
         }
+    
+        //Close client socket after processing request            
+        if (close(cfd) < 0) {
+            err_exit();
+        }
     }
+    return NULL;
 }
 
 /* 
@@ -348,7 +327,6 @@ int main(int argc, char **argv)
     int cfd = 0;
     struct sockaddr_in clientaddr;
     int clientaddr_size = sizeof(clientaddr);
-    pid_t childpid = 0;
 
     //Infinite loop to accept indefinite number of requests
     for(;;) {
@@ -357,7 +335,16 @@ int main(int argc, char **argv)
         if ((cfd = accept(s, (struct sockaddr *) &clientaddr, (socklen_t *) &clientaddr_size)) < 0) //don't care who connects to us; returns client file descriptor
             err_exit();  
 
-        childpid = fork();
+        pthread_t tid;
+        ClientInfo* cli_info = malloc(sizeof(ClientInfo));
+        bzero(cli_info, sizeof(ClientInfo));
+        cli_info->file_desc = cfd;
+        cli_info->port = argv[1];
+        cli_info->client_addr = clientaddr;
+
+        pthread_create(&tid, NULL, process_request, cli_info);
+
+        /*childpid = fork();
 
         if (childpid == -1) {   //Error (now in parent)
             err_exit();
@@ -375,7 +362,7 @@ int main(int argc, char **argv)
 
         else {
             close(cfd); //Parent process- move on to next client
-        }
+        }*/
     }
 
     exit(0);
