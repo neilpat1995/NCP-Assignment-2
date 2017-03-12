@@ -88,24 +88,33 @@ void* process_request(void* param) {
 
     //Verify that the request has at least an HTTP method, URI, and HTTP protocol version.
     int req_token_counter = 0;
-    char reqbufcpy[strlen(reqbuf)];
+    char reqbufcpy[strlen(reqbuf) + 1];
     bzero(reqbufcpy, sizeof(reqbufcpy));
     strcpy(reqbufcpy, reqbuf);
 
-    if(strtok(reqbufcpy, " ") != NULL) {
+    printf("Returned from strcpy\n");
+
+    char* req_pointer_cpy = malloc(strlen(reqbufcpy) + 1);
+    strcpy(req_pointer_cpy, reqbufcpy);
+
+    while(strsep(&req_pointer_cpy, " \n") != NULL) {
         req_token_counter++;
     }
 
-    while (strtok(NULL, " ") != NULL) {
-        req_token_counter++;
-    }
+    free(req_pointer_cpy);
 
+    printf("request token counter: %d\n", req_token_counter);
+
+    char* req_pointer = malloc(strlen(reqbuf) + 1);
+    strcpy(req_pointer, reqbuf);
+
+    //Handle proper requests only.
     if (req_token_counter >= 3) {
 
         //Parse URI and protocol version from request, and IP address from socket address structure.
-        strtok(reqbuf, " ");
-        char* request_uri = strtok(NULL, " ");
-        char* request_protocol = strtok(NULL, " ");
+        strsep(&req_pointer, " ");
+        char* request_uri = strsep(&req_pointer, " \n");
+        char* request_protocol = strsep(&req_pointer, " \n");
 
         char* ip_addr = (char*) malloc(INET_ADDRSTRLEN);
         bzero(ip_addr, INET_ADDRSTRLEN);
@@ -130,6 +139,7 @@ void* process_request(void* param) {
         }
 
         //Write buffer contents to file ptr
+        entry_buf[strlen(entry_buf)] = '\n';
         int num_entry_bytes_rem = strlen(entry_buf) + 1;
         int write_ret = 0;
         int num_wr = 0;
@@ -139,9 +149,10 @@ void* process_request(void* param) {
             num_wr += write_ret;
         }
 
+        fclose(logfile_ptr);
+        
         pthread_mutex_unlock(&logfile_mutex);
 
-        fclose(logfile_ptr);
 
 
         //Parse URL to get the domain, port (if included), and requested page.
@@ -218,10 +229,16 @@ void* process_request(void* param) {
 
         
         //Create socket to connect with specified server.
+        //Use mutex to ensure thread safety from Open_clientfd()'s call to gethostbyname()
         int clientfd = 0;
+
+        pthread_mutex_lock(&logfile_mutex);
+        
         if((clientfd = Open_clientfd(domain, atoi(port))) < 0) {
             err_exit();
         }
+
+        pthread_mutex_unlock(&logfile_mutex);
 
         //Form the HTTP request to send to the server.
         const char* http_method = "GET ";
